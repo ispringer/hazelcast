@@ -118,6 +118,9 @@ public class EventServiceImpl implements EventService, PostJoinAwareService {
     }
 
     private boolean handleRegistration(Registration reg) {
+        if (nodeEngine.getThisAddress().equals(reg.getSubscriber())) {
+            return false;
+        }
         EventServiceSegment segment = getSegment(reg.serviceName, true);
         return segment.addRegistration(reg.topic, reg);
     }
@@ -221,7 +224,7 @@ public class EventServiceImpl implements EventService, PostJoinAwareService {
             throw new IllegalArgumentException();
         }
         final Registration reg = (Registration) registration;
-        if (reg.isLocal()) {
+        if (isLocal(reg)) {
             executeLocal(serviceName, event, reg, orderKey);
         } else {
             final Address subscriber = registration.getSubscriber();
@@ -238,7 +241,7 @@ public class EventServiceImpl implements EventService, PostJoinAwareService {
                 throw new IllegalArgumentException();
             }
             final Registration reg = (Registration) registration;
-            if (reg.isLocal()) {
+            if (isLocal(reg)) {
                 executeLocal(serviceName, event, reg, orderKey);
             } else {
                 if (eventData == null) {
@@ -253,7 +256,11 @@ public class EventServiceImpl implements EventService, PostJoinAwareService {
     private void executeLocal(String serviceName, Object event, Registration reg, int orderKey) {
         if (nodeEngine.isActive()) {
             try {
-                eventExecutor.execute(new LocalEventDispatcher(serviceName, event, reg.listener, orderKey, eventQueueTimeoutMs));
+                if (reg.listener != null) {
+                    eventExecutor.execute(new LocalEventDispatcher(serviceName, event, reg.listener, orderKey, eventQueueTimeoutMs));
+                } else {
+                    logger.warning("Something seems wrong! Listener instance is null! -> " + reg);
+                }
             } catch (RejectedExecutionException e) {
                 if (eventExecutor.isLive()) {
                     logger.warning("EventQueue overloaded! " + event + " failed to publish to " + reg.serviceName + ":" + reg.topic);
@@ -290,6 +297,10 @@ public class EventServiceImpl implements EventService, PostJoinAwareService {
             });
         }
         return segment;
+    }
+
+    private boolean isLocal(Registration reg) {
+        return nodeEngine.getThisAddress().equals(reg.getSubscriber());
     }
 
     @PrivateApi
@@ -466,8 +477,12 @@ public class EventServiceImpl implements EventService, PostJoinAwareService {
                 }
                 return;
             }
-            if (!registration.isLocal()) {
-                logger.warning("Invalid target for  " + registration);
+            if (!isLocal(registration)) {
+                logger.severe("Invalid target for  " + registration);
+                return;
+            }
+            if (registration.listener == null) {
+                logger.warning("Something seems wrong! Subscriber is local but listener instance is null! -> " + registration);
                 return;
             }
             service.dispatchEvent(eventObject, registration.listener);
@@ -576,10 +591,6 @@ public class EventServiceImpl implements EventService, PostJoinAwareService {
 
         public boolean isLocalOnly() {
             return localOnly;
-        }
-
-        private boolean isLocal() {
-            return listener != null;
         }
 
         @Override
